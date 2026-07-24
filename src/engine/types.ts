@@ -8,7 +8,7 @@ export interface RemotePolicy {
   version: number;
   policyType: PolicyType;
   name: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by policyType, exactly like TLM's own base Policy.rules
+  // Shape varies by policyType, exactly like TLM's own base Policy.rules.
   rules: any;
 }
 

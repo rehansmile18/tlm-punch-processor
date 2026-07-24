@@ -47,8 +47,11 @@ function extractBearerToken(init: RequestInit | undefined): string | null {
   return raw.slice("Bearer ".length);
 }
 
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = Parameters<typeof fetch>[1];
+
 export function installMockRuleRepoFetch(): void {
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  globalThis.fetch = (async (input: FetchInput, init?: FetchInit): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input.toString());
 
     if (url.pathname.endsWith("/users/me")) {
