@@ -48,12 +48,18 @@ export function createApp(): Express {
 
   const v1 = express.Router();
   v1.use(globalRateLimiter);
+  // punchRouter MUST be mounted first: every router's `.use(authenticate)` runs unconditionally
+  // for ANY request reaching that router, regardless of whether one of its own routes ends up
+  // matching — Express doesn't scope an unprefixed `.use()` to "only requests this router will
+  // actually handle." A punch-ingest-key request (no Bearer header) would be rejected by the
+  // FIRST router's strict auth check before ever reaching punchRouter's own, more permissive
+  // authenticatePunchIngestOrUser if any stricter-auth router ran first.
+  v1.use(punchRouter);
   v1.use(employeeRouter);
   v1.use(employeeGroupRouter);
   v1.use(siteRouter);
   v1.use(taskRouter);
   v1.use(payPeriodConfigRouter);
-  v1.use(punchRouter);
   v1.use(processingRouter);
   v1.use(timesheetRouter);
   app.use("/api/v1", v1);
