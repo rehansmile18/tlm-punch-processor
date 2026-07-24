@@ -1,6 +1,10 @@
 import { Router } from "express";
+import { authenticate } from "../../middleware/auth";
+import { validateRequest } from "../../middleware/validateRequest";
+import { createProcessingRunSchema } from "./processing.validators";
+import { createProcessingRunHandler } from "./processing.controller";
 
-// TODO(phase: concurrency + processing API): POST /processing/runs (batch, p-limit + lock),
-// GET /processing/runs/:runId, POST /processing/runs/:runId/cancel. Placeholder so app.ts
-// resolves while earlier phases land first.
 export const processingRouter = Router();
+processingRouter.use(authenticate);
+
+processingRouter.post("/processing/runs", validateRequest({ body: createProcessingRunSchema }), createProcessingRunHandler);

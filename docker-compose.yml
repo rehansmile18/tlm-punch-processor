@@ -1,0 +1,71 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # This service owns its OWN MongoDB — a separate database and a separate host port from TLM's
+    # compose stack (which binds 127.0.0.1:27017), so both stacks can run side by side on one
+    # machine. Bound to localhost only — the database must never be reachable from the network.
+    ports:
+      - "127.0.0.1:27018:27017"
+    environment:
+      # MongoDB starts with authentication enabled. Override these with real values via a .env
+      # file (or your orchestrator's secrets) before using this anywhere but a local machine.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-tlm_punch_root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-local-dev-only-change-me}
+      MONGO_INITDB_DATABASE: tlm_punch_processor
+    volumes:
+      - mongo_data:/data/db
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    # Localhost only by default. Put a reverse proxy / TLS terminator in front for real exposure.
+    ports:
+      - "127.0.0.1:4100:4100"
+    # Lets the container reach a TLM instance running directly on the host (e.g. TLM's own `npm run
+    # dev` or its own separate compose stack published to the host). Only takes effect on Linux —
+    # Docker Desktop (Mac/Windows) already resolves host.docker.internal without this.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PORT: 4100
+      # This compose file is a LOCAL DEV/DEMO stack (NODE_ENV=development), which is why the
+      # placeholder secrets below are accepted. Set NODE_ENV=production AND supply real values for
+      # JWT_SECRET, RULE_REPO_SERVICE_JWT, PUNCH_INGEST_API_KEY, and Mongo credentials (e.g. in a
+      # .env file) to run this as a real deployment — the app refuses to boot on placeholder
+      # secrets outside development/test (same resolveSecret() enforcement as TLM).
+      NODE_ENV: ${NODE_ENV:-development}
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-tlm_punch_root}:${MONGO_ROOT_PASSWORD:-local-dev-only-change-me}@mongo:27017/tlm_punch_processor?authSource=admin
+
+      # Must be the SAME value as the TLM instance's own JWT_SECRET — this service verifies the
+      # identical human-login JWTs TLM issues rather than minting its own. The fallback below
+      # matches TLM's own compose default, so two default-configured local dev stacks already
+      # agree with no extra setup — override both with the same real value via a .env file next
+      # to each compose file for anything beyond local dev.
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+
+      # Assumes TLM is reachable as a separate compose stack (or bare `npm run dev`) published on
+      # the host at localhost:4000 — adjust if your TLM instance lives elsewhere (a shared Docker
+      # network, a remote host, etc.). Not fabricated as a shared network here to keep this stack
+      # independently runnable without assuming TLM's compose project even exists on this machine.
+      RULE_REPO_BASE_URL: ${RULE_REPO_BASE_URL:-http://host.docker.internal:4000/api/v1}
+      # A long-lived JWT for a PLATFORM_ADMIN service-account User seeded in TLM (see README.md).
+      # Must be supplied with a real value for anything beyond local dev against a real TLM
+      # instance — same resolveSecret() enforcement as JWT_SECRET.
+      RULE_REPO_SERVICE_JWT: ${RULE_REPO_SERVICE_JWT:-dev-secret-change-me}
+
+      PROCESSING_CONCURRENCY: ${PROCESSING_CONCURRENCY:-8}
+      LOCK_LEASE_MS: ${LOCK_LEASE_MS:-60000}
+
+      # Shared secret for kiosk/upstream time-clock systems submitting punches. Must be supplied
+      # with a real value for anything beyond local dev — same resolveSecret() enforcement as
+      # JWT_SECRET.
+      PUNCH_INGEST_API_KEY: ${PUNCH_INGEST_API_KEY:-dev-secret-change-me}
+
+      USER_PROFILE_CACHE_MS: ${USER_PROFILE_CACHE_MS:-60000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+
+volumes:
+  mongo_data:
