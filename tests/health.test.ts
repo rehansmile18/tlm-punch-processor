@@ -20,8 +20,14 @@ describe("smoke test: app boots, health check", () => {
     expect(res.body.ruleRepository).toBe("up");
   });
 
-  it("returns 404 (not 401 or 500) for an unregistered route under a still-placeholder module, given a request with no token", async () => {
-    const res = await authed(ctx.app, "not-a-real-token").get("/api/v1/employees");
+  it("rejects a made-up route with no valid token as 401 (auth runs before route matching, same as TLM)", async () => {
+    const res = await authed(ctx.app, "not-a-real-token").get("/api/v1/totally-made-up-route");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 (not 500) for a made-up route once authenticated", async () => {
+    const token = seedAuthedUser({ role: "PLATFORM_ADMIN", clientId: null });
+    const res = await authed(ctx.app, token).get("/api/v1/totally-made-up-route");
     expect(res.status).toBe(404);
   });
 });
