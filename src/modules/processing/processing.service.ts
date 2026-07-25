@@ -63,6 +63,13 @@ function enumerateBusinessDates(startDateStr: string, endDateStr: string): strin
  * which haven't necessarily persisted yet in a way this reads reliably — always the DB's
  * source of truth). Bounded to the current workweek, matching how CA's own 7th-consecutive-day
  * rule is itself defined relative to one workweek, not a rolling window.
+ *
+ * Processing is unconditional (see the day-loop above) — a period can be reprocessed many times
+ * as corrections come in, and each reprocessing of a day creates a NEW ProcessingRun rather than
+ * mutating the old one (append-only, same as everywhere else in this service). That means several
+ * "completed" runs can exist for the SAME prior businessDate. Only the MOST RECENT one per date
+ * should count toward the cumulative totals — summing all of them would double/triple-count a day
+ * every time it's reprocessed.
  */
 async function buildWeekToDateContext(
   clientId: Types.ObjectId,
@@ -77,18 +84,23 @@ async function buildWeekToDateContext(
     runStatus: "completed",
     businessDate: { $gte: workweekKey, $lt: businessDate },
   })
-    .sort({ businessDate: 1 })
+    // Ascending completedAt within each date, so the Map-building loop below (which overwrites on
+    // insert) is left holding only the LATEST run per date once it's done.
+    .sort({ businessDate: 1, completedAt: 1 })
     .lean();
+
+  const runsByDate = new Map<string, (typeof priorRuns)[number]>();
+  for (const run of priorRuns) {
+    runsByDate.set(run.businessDate, run); // later entries for the same date overwrite earlier ones
+  }
 
   let cumulativeRegularMinutesPriorDays = 0;
   let cumulativeOtMinutesPriorDays = 0;
-  const runsByDate = new Map<string, (typeof priorRuns)[number]>();
-  for (const run of priorRuns) {
+  for (const run of runsByDate.values()) {
     if (run.finalState) {
       cumulativeRegularMinutesPriorDays += run.finalState.hourBuckets.regularMinutes;
       cumulativeOtMinutesPriorDays += run.finalState.hourBuckets.otMinutes;
     }
-    runsByDate.set(run.businessDate, run);
   }
 
   let consecutiveDaysWorked = 0;
@@ -158,6 +170,14 @@ export async function processEmployeePeriod(
     const startDateStr = businessDateInZone(period.start, payPeriodConfig.timezone);
     const endDateStr = businessDateInZone(period.end, payPeriodConfig.timezone);
 
+    // Once true (a day had no prior completed run, or one of its punches changed since its last
+    // run), every day from that point forward is reprocessed unconditionally for the rest of this
+    // call — never just the one changed day in isolation. OVERTIME's weekly reclassification means
+    // every later day's regular/OT split depends on the cumulative total up to that point, so a
+    // correction to Monday has to ripple forward through the rest of the workweek, not stop at
+    // Monday. Days strictly before the first change are safely reused from their existing run.
+    let cascadeFromHere = false;
+
     if (payPeriodConfig.producesHourlyLines) {
       for (const businessDate of enumerateBusinessDates(startDateStr, endDateStr)) {
         const dayStart = new Date(`${businessDate}T00:00:00.000Z`);
@@ -171,6 +191,39 @@ export async function processEmployeePeriod(
 
         if (punches.length === 0) continue;
         if (hasOpenPunch(punches)) continue; // day can't be finalized yet — excluded, not guessed at
+
+        // The existing completed run for this day (if any) and whether anything about this day
+        // has changed since that run finished — a new/edited/added punch, or no run existing yet.
+        const existingRun = await ProcessingRun.findOne({ clientId, employeeId, businessDate, runStatus: "completed" })
+          .sort({ completedAt: -1 })
+          .lean();
+        const latestPunchUpdate = punches.reduce((max, p) => (p.updatedAt > max ? p.updatedAt : max), new Date(0));
+        const dayChanged = !existingRun?.completedAt || !existingRun.finalState || latestPunchUpdate > existingRun.completedAt;
+        if (dayChanged) cascadeFromHere = true;
+
+        if (!cascadeFromHere && existingRun?.finalState) {
+          // Nothing changed for this day, and nothing before it in this call needed reprocessing
+          // either — reuse the existing run's result rather than redundantly re-resolving/re-running it.
+          const amounts = finalizeAmounts(existingRun.finalState);
+          const { regularMinutes, otMinutes, dtMinutes } = existingRun.finalState.hourBuckets;
+          const firstSegment = existingRun.finalState.rawSegments[0];
+          lines.push({
+            businessDate,
+            siteId: firstSegment?.siteId ?? "unknown",
+            employeeId,
+            task: firstSegment?.task ?? "unknown",
+            rate: existingRun.finalState.rate.baseRate,
+            rateType: existingRun.finalState.rate.rateType,
+            dailyAmount: amounts.regularAmount,
+            additionalAmount: amounts.otAmount + amounts.dtAmount + amounts.differentialAmount + amounts.premiumAmount,
+            additionalHours: (otMinutes + dtMinutes) / 60,
+            totalHours: (regularMinutes + otMinutes + dtMinutes) / 60,
+            totalAmount: amounts.totalAmount,
+            runId: existingRun._id,
+          });
+          lastRunId = existingRun._id;
+          continue;
+        }
 
         const segments = buildSegmentsFromPunches(punches);
         const primarySiteId = segments[0].siteId;
