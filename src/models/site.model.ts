@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 
 export interface SiteDoc {
   _id: Types.ObjectId;
@@ -24,4 +25,4 @@ const siteSchema = new Schema<SiteDoc>(
 
 siteSchema.index({ clientId: 1, siteId: 1 }, { unique: true });
 
-export const Site = model<SiteDoc>("Site", siteSchema);
+export const Site = ruleRepoConnection.model<SiteDoc>("Site", siteSchema);

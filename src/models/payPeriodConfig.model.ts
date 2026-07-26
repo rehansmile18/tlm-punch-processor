@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 import { CADENCES, Cadence, PAY_DATE_WEEKEND_RULES, PayDateWeekendRule } from "../types/domain";
 
 export interface PayPeriodConfigDoc {
@@ -55,4 +56,4 @@ payPeriodConfigSchema.pre("validate", function (next) {
   next();
 });
 
-export const PayPeriodConfig = model<PayPeriodConfigDoc>("PayPeriodConfig", payPeriodConfigSchema);
+export const PayPeriodConfig = ruleRepoConnection.model<PayPeriodConfigDoc>("PayPeriodConfig", payPeriodConfigSchema);

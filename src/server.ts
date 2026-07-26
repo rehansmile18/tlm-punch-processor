@@ -1,6 +1,5 @@
-import mongoose from "mongoose";
 import { createApp } from "./app";
-import { connectDb } from "./config/db";
+import { connectDb, disconnectDb } from "./config/db";
 import { env } from "./config/env";
 import { reapStaleLocksJob } from "./jobs/reapStaleLocks";
 
@@ -34,7 +33,7 @@ async function main(): Promise<void> {
     }, 10_000);
     forceExit.unref();
     server.close(async () => {
-      await mongoose.disconnect().catch(() => undefined);
+      await disconnectDb().catch(() => undefined);
       clearTimeout(forceExit);
       process.exit(0);
     });

@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 
 export interface EmployeeGroupDoc {
   _id: Types.ObjectId;
@@ -22,4 +23,4 @@ const employeeGroupSchema = new Schema<EmployeeGroupDoc>(
 
 employeeGroupSchema.index({ clientId: 1, name: 1 }, { unique: true });
 
-export const EmployeeGroup = model<EmployeeGroupDoc>("EmployeeGroup", employeeGroupSchema);
+export const EmployeeGroup = ruleRepoConnection.model<EmployeeGroupDoc>("EmployeeGroup", employeeGroupSchema);

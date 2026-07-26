@@ -28,7 +28,14 @@ function resolveSecret(name: string, devFallback: string): string {
 
 export const env = {
   port: Number(process.env.PORT ?? 4100),
+  // This service's OWN database — processing-only state: ProcessingLock, ProcessingRun,
+  // ProcessingAuditEntry, Timesheet.
   mongoUri: process.env.MONGODB_URI ?? "mongodb://localhost:27017/tlm_punch_processor",
+  // The TLM Rule Repository's own MongoDB database. Employee, EmployeeGroup, Site, Task,
+  // PayPeriodConfig, PayrollCalendar, and Punch all live THERE instead of this service's own
+  // database — they're fundamentally client-owned master data that belongs alongside the Client
+  // records TLM already owns, not processing state. See config/db.ts's `ruleRepoConnection`.
+  ruleRepoMongoUri: process.env.RULE_REPO_MONGODB_URI ?? "mongodb://localhost:27017/tlm_rule_repository",
   // Must be the SAME secret TLM's JWT_SECRET is set to — this service verifies the identical
   // human-login JWTs TLM issues (see middleware/auth.ts), it does not mint its own.
   jwtSecret: resolveSecret("JWT_SECRET", "dev-secret-change-me"),

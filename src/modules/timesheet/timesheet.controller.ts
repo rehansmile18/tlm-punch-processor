@@ -28,6 +28,11 @@ export const getTimesheetHandler = asyncHandler(async (req: Request, res: Respon
   res.json(doc);
 });
 
+export const getTimesheetAuditTrailHandler = asyncHandler(async (req: Request, res: Response) => {
+  const entries = await timesheetService.getTimesheetAuditTrail(req.params.id, getReadClientFilter(req));
+  res.json({ entries });
+});
+
 export const voidTimesheetHandler = asyncHandler(async (req: Request, res: Response) => {
   // Load the existing doc under the caller's own read filter first, then authorize against ITS
   // clientId — mirrors employee.controller.ts's updateEmployeeHandler exactly.

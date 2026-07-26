@@ -5,6 +5,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import mongoose from "mongoose";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import { ruleRepoConnection } from "./config/db";
 import { ruleRepositoryClient } from "./clients/ruleRepositoryClient";
 import { employeeRouter } from "./modules/employee/employee.routes";
 import { employeeGroupRouter } from "./modules/employeeGroup/employeeGroup.routes";
@@ -27,14 +28,23 @@ export function createApp(): Express {
     app.use(morgan("dev"));
   }
 
-  // Deep health check: this service's own DB status, PLUS a short-timeout, non-blocking
-  // reachability probe of the Rule Repository it depends on — reported separately so "my DB is
-  // fine but I can't process anything because TLM is down" is distinguishable from "I'm broken."
+  // Deep health check: this service's own DB status, the SEPARATE connection to TLM's own
+  // database (Employee/Site/Task/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch), PLUS a
+  // short-timeout, non-blocking reachability probe of the Rule Repository's HTTP API — reported
+  // separately so e.g. "my own DB is fine but TLM's database is unreachable" (master-data/punch
+  // endpoints would fail) is distinguishable from "I'm broken" or "TLM's API is just down."
   app.get("/health", async (_req, res) => {
     const dbUp = mongoose.connection.readyState === 1;
+    const ruleRepoDbUp = ruleRepoConnection.readyState === 1;
     const ruleRepoUp = await ruleRepositoryClient.healthCheck();
-    const status = dbUp ? "ok" : "degraded";
-    res.status(dbUp ? 200 : 503).json({ status, db: dbUp ? "up" : "down", ruleRepository: ruleRepoUp ? "up" : "down" });
+    const allUp = dbUp && ruleRepoDbUp;
+    const status = allUp ? "ok" : "degraded";
+    res.status(allUp ? 200 : 503).json({
+      status,
+      db: dbUp ? "up" : "down",
+      ruleRepoDb: ruleRepoDbUp ? "up" : "down",
+      ruleRepository: ruleRepoUp ? "up" : "down",
+    });
   });
 
   const globalRateLimiter = rateLimit({

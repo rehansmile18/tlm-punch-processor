@@ -2,9 +2,14 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    # This service owns its OWN MongoDB — a separate database and a separate host port from TLM's
-    # compose stack (which binds 127.0.0.1:27017), so both stacks can run side by side on one
-    # machine. Bound to localhost only — the database must never be reachable from the network.
+    # This service's OWN MongoDB — but it now holds ONLY processing-specific state (ProcessingLock,
+    # ProcessingRun, ProcessingAuditEntry, Timesheet). Employee/EmployeeGroup/Site/Task/
+    # PayPeriodConfig/PayrollCalendar/Punch are client-owned master data that live in TLM's own
+    # database instead (see the `api` service's RULE_REPO_MONGODB_URI below) — this service only
+    # refers to them there, it doesn't own or replicate them. Separate database AND separate host
+    # port from TLM's compose stack (which binds 127.0.0.1:27017), so both stacks can run side by
+    # side on one machine. Bound to localhost only — the database must never be reachable from the
+    # network.
     ports:
       - "127.0.0.1:27018:27017"
     environment:
@@ -37,7 +42,17 @@ services:
       # .env file) to run this as a real deployment — the app refuses to boot on placeholder
       # secrets outside development/test (same resolveSecret() enforcement as TLM).
       NODE_ENV: ${NODE_ENV:-development}
+      # This service's OWN database — processing-only state (ProcessingLock/ProcessingRun/
+      # ProcessingAuditEntry/Timesheet).
       MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-tlm_punch_root}:${MONGO_ROOT_PASSWORD:-local-dev-only-change-me}@mongo:27017/tlm_punch_processor?authSource=admin
+      # TLM's OWN MongoDB database — Employee/EmployeeGroup/Site/Task/PayPeriodConfig/
+      # PayrollCalendar/Punch all live there (client-owned master data alongside TLM's own
+      # Client/User/Policy collections), and this service's second Mongoose connection
+      # (config/db.ts's `ruleRepoConnection`) just refers to them there. The default below assumes
+      # TLM's own compose stack is running on this same host with ITS default credentials
+      # (tlm_root / local-dev-only-change-me) — override to match your actual TLM Mongo instance's
+      # credentials/host for anything beyond that exact local-pairing case.
+      RULE_REPO_MONGODB_URI: ${RULE_REPO_MONGODB_URI:-mongodb://tlm_root:local-dev-only-change-me@host.docker.internal:27017/tlm_rule_repository?authSource=admin}
 
       # Must be the SAME value as the TLM instance's own JWT_SECRET — this service verifies the
       # identical human-login JWTs TLM issues rather than minting its own. The fallback below

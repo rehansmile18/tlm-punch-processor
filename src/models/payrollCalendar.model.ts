@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 
 export interface PayrollCalendarRow {
   periodEnd: Date; // "YYYY-MM-DD" boundary date this row's payDate applies to
@@ -35,4 +36,4 @@ const payrollCalendarSchema = new Schema<PayrollCalendarDoc>(
 
 payrollCalendarSchema.index({ clientId: 1, name: 1 }, { unique: true });
 
-export const PayrollCalendar = model<PayrollCalendarDoc>("PayrollCalendar", payrollCalendarSchema);
+export const PayrollCalendar = ruleRepoConnection.model<PayrollCalendarDoc>("PayrollCalendar", payrollCalendarSchema);

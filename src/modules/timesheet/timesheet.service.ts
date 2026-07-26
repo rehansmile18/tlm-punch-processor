@@ -1,5 +1,6 @@
 import { Types } from "mongoose";
 import { Timesheet, TimesheetDoc, TimesheetLine } from "../../models/timesheet.model";
+import { ProcessingAuditEntry } from "../../models/processingAudit.model";
 import { TimesheetStatus } from "../../types/domain";
 import { BadRequestError, NotFoundError } from "../../utils/errors";
 
@@ -44,6 +45,28 @@ export async function getTimesheet(id: string, tenantFilter: Record<string, unkn
   const doc = await Timesheet.findOne({ _id: id, ...tenantFilter }).lean();
   if (!doc) throw new NotFoundError(`Timesheet ${id} not found`);
   return doc;
+}
+
+/**
+ * Every line carries the runId of the specific ProcessingRun that produced it — a timesheet's
+ * days aren't necessarily all from the same run: an unchanged earlier day's line can still
+ * reference an older run that a repeat processing call reused rather than recomputed (see
+ * processing.service.ts's cascade-on-change logic), while other days point at freshly created
+ * runs. So a complete audit trail has to gather steps across ALL distinct runIds referenced by
+ * the timesheet's lines, not just the single top-level `runId` field (which is only the last run
+ * created during whichever call produced this version).
+ */
+export async function getTimesheetAuditTrail(id: string, tenantFilter: Record<string, unknown>) {
+  const timesheet = await getTimesheet(id, tenantFilter);
+  const businessDateByRunId = new Map(timesheet.lines.map((line) => [String(line.runId), line.businessDate]));
+  const runIds =
+    timesheet.lines.length > 0 ? [...new Set(timesheet.lines.map((line) => String(line.runId)))] : [String(timesheet.runId)];
+
+  const entries = await ProcessingAuditEntry.find({ runId: { $in: runIds.map((runId) => new Types.ObjectId(runId)) } })
+    .sort({ runId: 1, sequenceIndex: 1 })
+    .lean();
+
+  return entries.map((entry) => ({ ...entry, businessDate: businessDateByRunId.get(String(entry.runId)) ?? null }));
 }
 
 /**

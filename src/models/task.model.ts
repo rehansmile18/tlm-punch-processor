@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 
 export interface TaskDoc {
   _id: Types.ObjectId;
@@ -22,4 +23,4 @@ const taskSchema = new Schema<TaskDoc>(
 
 taskSchema.index({ clientId: 1, name: 1 }, { unique: true });
 
-export const Task = model<TaskDoc>("Task", taskSchema);
+export const Task = ruleRepoConnection.model<TaskDoc>("Task", taskSchema);

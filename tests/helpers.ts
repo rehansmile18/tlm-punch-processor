@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import request from "supertest";
 import { createApp } from "../src/app";
+import { ruleRepoConnection } from "../src/config/db";
 import { env } from "../src/config/env";
 import { registerMockProfile, resetMockRuleRepo, type MockProfile } from "./mockRuleRepo";
 
@@ -13,16 +14,31 @@ export interface TestContext {
   teardown: () => Promise<void>;
 }
 
+// A single in-memory Mongo SERVER, but two separate logical databases/connections on it —
+// mirrors production's two-database split (this service's own processing state on the default
+// connection, TLM's own database on ruleRepoConnection — see config/db.ts) without spawning a
+// second mongod process per test file, which was enough concurrent-process contention across the
+// whole suite to cause intermittent request timeouts.
 export async function setupTestContext(): Promise<TestContext> {
   const mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  await Promise.all([
+    mongoose.connect(mongod.getUri("tlm_punch_processor_test")),
+    ruleRepoConnection.openUri(mongod.getUri("tlm_rule_repository_test")),
+  ]);
+  // Index builds (e.g. the unique {clientId, siteId} index) run in the background after connecting
+  // and are NOT awaited by connect()/openUri() themselves — without this, a test's very first
+  // requests can race a still-building unique index and see it silently not enforced yet.
+  await Promise.all([
+    ...Object.values(mongoose.connection.models).map((m) => m.init()),
+    ...Object.values(ruleRepoConnection.models).map((m) => m.init()),
+  ]);
   const app = createApp();
   return {
     app,
     mongod,
     teardown: async () => {
       resetMockRuleRepo();
-      await mongoose.disconnect();
+      await Promise.all([mongoose.disconnect(), ruleRepoConnection.close()]);
       await mongod.stop();
     },
   };

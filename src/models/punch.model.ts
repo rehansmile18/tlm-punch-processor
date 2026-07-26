@@ -1,4 +1,5 @@
-import { Schema, model, Types } from "mongoose";
+import { Schema, Types } from "mongoose";
+import { ruleRepoConnection } from "../config/db";
 
 export interface PunchDoc {
   _id: Types.ObjectId;
@@ -39,4 +40,4 @@ const punchSchema = new Schema<PunchDoc>(
 punchSchema.index({ clientId: 1, employeeId: 1, clockIn: 1 });
 punchSchema.index({ clientId: 1, siteId: 1, clockIn: 1 });
 
-export const Punch = model<PunchDoc>("Punch", punchSchema);
+export const Punch = ruleRepoConnection.model<PunchDoc>("Punch", punchSchema);

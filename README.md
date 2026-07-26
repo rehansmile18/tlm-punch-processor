@@ -8,9 +8,17 @@ This service is a **downstream consumer** of the sibling [TLM Rule Repository](.
 it does not store or evaluate policies itself. For every punch it processes, it asks TLM which
 rule groups apply to that employee/site/date (via TLM's layered assignment resolution) and runs
 the resolved policies (overtime, meal/rest breaks, shift differentials, pay differentials, rate
-rules, etc.) through its own local rule-type engine. This service owns its own separate database
-and its own master data — `Employee`, `Site`, `Task`, `EmployeeGroup`, `PayPeriodConfig`,
-`PayrollCalendar` — none of which TLM knows about; TLM is consulted only for the rules themselves.
+rules, etc.) through its own local rule-type engine.
+
+This service uses **two MongoDB connections**:
+- TLM's own database (`tlm_rule_repository`) holds `Employee`, `Site`, `Task`, `EmployeeGroup`,
+  `PayPeriodConfig`, `PayrollCalendar`, and `Punch` — client-owned master data that belongs
+  alongside the `Client`/`User`/`Policy` records TLM already owns. This service connects to that
+  same database (via a second Mongoose connection, `RULE_REPO_MONGODB_URI`) purely to refer to
+  those collections; it doesn't own, migrate, or duplicate them.
+- This service's own database (`tlm_punch_processor`, `MONGODB_URI`) holds only its
+  processing-specific state: `ProcessingLock`, `ProcessingRun`, `ProcessingAuditEntry`, and
+  `Timesheet`.
 
 See [`TEST_PLAN.md`](TEST_PLAN.md) for the full architecture and testing strategy, including the
 processing pipeline, concurrency/locking design, and the rule-type processor archetypes.
@@ -18,10 +26,12 @@ processing pipeline, concurrency/locking design, and the rule-type processor arc
 ## Requirements
 
 - Node.js 20+
-- MongoDB 6+ (local install, Docker, or Atlas) — separate from, and unrelated to, TLM's own database
+- MongoDB 6+ (local install, Docker, or Atlas) for this service's own processing state
+- Access to TLM's own MongoDB database (`tlm_rule_repository`) — this service reads/writes
+  Employee/EmployeeGroup/Site/Task/PayPeriodConfig/PayrollCalendar/Punch there directly, so it
+  must be the SAME database instance TLM itself uses, not a separate copy
 - A reachable TLM Rule Repository instance (for policy resolution and the outbound half of
-  `/health`; the master-data and punch-ingestion endpoints below work even if TLM is temporarily
-  unreachable)
+  `/health`)
 
 ## Quick start (local Node + local/Docker MongoDB)
 
@@ -32,6 +42,10 @@ cp .env.example .env        # edit if you're not using the defaults
 # Start this service's own MongoDB if you don't already have one running (bound to localhost only):
 docker run -d --name tlm-punch-mongo -p 127.0.0.1:27018:27017 mongo:7
 # then set MONGODB_URI=mongodb://localhost:27018/tlm_punch_processor in .env
+
+# Point RULE_REPO_MONGODB_URI in .env at TLM's OWN MongoDB instance/database (wherever TLM's own
+# MONGODB_URI points) — this service reads/writes Employee/Site/Task/EmployeeGroup/
+# PayPeriodConfig/PayrollCalendar/Punch there directly, not in a database of its own.
 
 npm run dev                 # starts the API on http://localhost:4100
 ```
@@ -84,13 +98,16 @@ npm run typecheck
 docker compose up -d --build
 ```
 
-This brings up this service's own MongoDB (bound to `127.0.0.1:27018`, separate port and database
-from TLM's) and the API (bound to `127.0.0.1:4100`). By default it assumes a TLM instance is
+This brings up this service's own MongoDB (bound to `127.0.0.1:27018`, holding only this service's
+processing state) and the API (bound to `127.0.0.1:4100`). By default it assumes a TLM instance is
 reachable on the host at `http://host.docker.internal:4000/api/v1` (e.g. TLM's own compose stack,
 or a bare `npm run dev`, running alongside this one) — override `RULE_REPO_BASE_URL` if yours
-lives elsewhere. See the comments in `docker-compose.yml` for how to point it at a real TLM
-instance and supply real `JWT_SECRET` / `RULE_REPO_SERVICE_JWT` / `PUNCH_INGEST_API_KEY` values —
-the app refuses to boot on placeholder secrets outside `NODE_ENV=development`/`test`, same as TLM.
+lives elsewhere. It also assumes TLM's own MongoDB is reachable on the host at
+`host.docker.internal:27017` with TLM's own compose-default credentials — override
+`RULE_REPO_MONGODB_URI` if TLM's database lives elsewhere or uses different credentials. See the
+comments in `docker-compose.yml` for how to point both at a real TLM instance and supply real
+`JWT_SECRET` / `RULE_REPO_SERVICE_JWT` / `PUNCH_INGEST_API_KEY` values — the app refuses to boot on
+placeholder secrets outside `NODE_ENV=development`/`test`, same as TLM.
 
 ## Environment variables
 
@@ -98,7 +115,8 @@ See [`.env.example`](.env.example) for the full list with explanations. Notable 
 
 | Variable | Purpose |
 |---|---|
-| `MONGODB_URI` | This service's own MongoDB connection string — never TLM's database |
+| `MONGODB_URI` | This service's own MongoDB connection string — processing state only (ProcessingLock/ProcessingRun/ProcessingAuditEntry/Timesheet) |
+| `RULE_REPO_MONGODB_URI` | TLM's own MongoDB connection string — Employee/EmployeeGroup/Site/Task/PayPeriodConfig/PayrollCalendar/Punch live there; must point at the SAME database TLM itself uses |
 | `JWT_SECRET` | Must be the **same value** as TLM's `JWT_SECRET` — this service verifies the identical human-login JWTs TLM issues, it does not mint its own |
 | `RULE_REPO_BASE_URL` | Base URL of the TLM API this service calls outbound (include `/api/v1`) |
 | `RULE_REPO_SERVICE_JWT` | Long-lived JWT for a `PLATFORM_ADMIN` service-account user seeded in TLM, used only for this service's own outbound calls to TLM |
