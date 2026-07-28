@@ -38,17 +38,17 @@ services:
       PORT: 4100
       # This compose file is a LOCAL DEV/DEMO stack (NODE_ENV=development), which is why the
       # placeholder secrets below are accepted. Set NODE_ENV=production AND supply real values for
-      # JWT_SECRET, RULE_REPO_SERVICE_JWT, PUNCH_INGEST_API_KEY, and Mongo credentials (e.g. in a
-      # .env file) to run this as a real deployment — the app refuses to boot on placeholder
-      # secrets outside development/test (same resolveSecret() enforcement as TLM).
+      # JWT_SECRET, RULE_REPO_SERVICE_JWT, and Mongo credentials (e.g. in a .env file) to run this
+      # as a real deployment — the app refuses to boot on placeholder secrets outside
+      # development/test (same resolveSecret() enforcement as TLM).
       NODE_ENV: ${NODE_ENV:-development}
       # This service's OWN database — processing-only state (ProcessingLock/ProcessingRun/
       # ProcessingAuditEntry/Timesheet).
       MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-tlm_punch_root}:${MONGO_ROOT_PASSWORD:-local-dev-only-change-me}@mongo:27017/tlm_punch_processor?authSource=admin
-      # TLM's OWN MongoDB database — Employee/EmployeeGroup/Site/Task/PayPeriodConfig/
-      # PayrollCalendar/Punch all live there (client-owned master data alongside TLM's own
-      # Client/User/Policy collections), and this service's second Mongoose connection
-      # (config/db.ts's `ruleRepoConnection`) just refers to them there. The default below assumes
+      # TLM's OWN MongoDB database — Employee/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch
+      # all live there (client-owned master data owned by tlm-backend's own API, alongside TLM's
+      # own Client/User/Policy collections), and this service's second Mongoose connection
+      # (config/db.ts's `ruleRepoConnection`) just reads them there. The default below assumes
       # TLM's own compose stack is running on this same host with ITS default credentials
       # (tlm_root / local-dev-only-change-me) — override to match your actual TLM Mongo instance's
       # credentials/host for anything beyond that exact local-pairing case.
@@ -73,11 +73,6 @@ services:
 
       PROCESSING_CONCURRENCY: ${PROCESSING_CONCURRENCY:-8}
       LOCK_LEASE_MS: ${LOCK_LEASE_MS:-60000}
-
-      # Shared secret for kiosk/upstream time-clock systems submitting punches. Must be supplied
-      # with a real value for anything beyond local dev — same resolveSecret() enforcement as
-      # JWT_SECRET.
-      PUNCH_INGEST_API_KEY: ${PUNCH_INGEST_API_KEY:-dev-secret-change-me}
 
       USER_PROFILE_CACHE_MS: ${USER_PROFILE_CACHE_MS:-60000}
       CORS_ORIGIN: ${CORS_ORIGIN:-}

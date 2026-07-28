@@ -64,9 +64,3 @@ export function authed(app: TestContext["app"], token: string) {
     delete: (url: string) => request(app).delete(url).set("Authorization", `Bearer ${token}`),
   };
 }
-
-export function withPunchIngestKey(app: TestContext["app"], key = "test-ingest-key") {
-  return {
-    post: (url: string, body?: object) => request(app).post(url).set("X-Punch-Ingest-Key", key).send(body),
-  };
-}

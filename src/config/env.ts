@@ -52,13 +52,6 @@ export const env = {
   processingConcurrency: Number(process.env.PROCESSING_CONCURRENCY ?? 8),
   lockLeaseMs: Number(process.env.LOCK_LEASE_MS ?? 60_000),
 
-  // A single shared secret for kiosk/upstream time-clock systems submitting punches — deliberately
-  // NOT a TLM user/JWT (TLM has no PUNCH_INGEST role; this stays entirely local to this service).
-  // v1 simplification: one shared key, not per-client — documented in README as an easy future
-  // extension (a PunchIngestKey collection keyed by clientId) if a leaked key's blast radius needs
-  // to be narrowed further than "can create punches for any client."
-  punchIngestApiKey: resolveSecret("PUNCH_INGEST_API_KEY", "dev-secret-change-me"),
-
   // How long a cached (role, clientId) lookup from TLM's GET /users/me is trusted before this
   // service re-checks it — bounds how stale a role/permission change can be seen as, without
   // hitting TLM on every single request.

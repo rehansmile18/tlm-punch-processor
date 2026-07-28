@@ -7,12 +7,6 @@ import mongoose from "mongoose";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { ruleRepoConnection } from "./config/db";
 import { ruleRepositoryClient } from "./clients/ruleRepositoryClient";
-import { employeeRouter } from "./modules/employee/employee.routes";
-import { employeeGroupRouter } from "./modules/employeeGroup/employeeGroup.routes";
-import { siteRouter } from "./modules/site/site.routes";
-import { taskRouter } from "./modules/task/task.routes";
-import { payPeriodConfigRouter } from "./modules/payPeriodConfig/payPeriodConfig.routes";
-import { punchRouter } from "./modules/punch/punch.routes";
 import { processingRouter } from "./modules/processing/processing.routes";
 import { timesheetRouter } from "./modules/timesheet/timesheet.routes";
 
@@ -28,11 +22,12 @@ export function createApp(): Express {
     app.use(morgan("dev"));
   }
 
-  // Deep health check: this service's own DB status, the SEPARATE connection to TLM's own
-  // database (Employee/Site/Task/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch), PLUS a
-  // short-timeout, non-blocking reachability probe of the Rule Repository's HTTP API — reported
-  // separately so e.g. "my own DB is fine but TLM's database is unreachable" (master-data/punch
-  // endpoints would fail) is distinguishable from "I'm broken" or "TLM's API is just down."
+  // Deep health check: this service's own DB status, the SEPARATE connection to TLM's own database
+  // (Employee/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch — this engine's own read-only
+  // reference data now that tlm-backend is the public CRUD owner), PLUS a short-timeout,
+  // non-blocking reachability probe of the Rule Repository's HTTP API — reported separately so e.g.
+  // "my own DB is fine but TLM's database is unreachable" (processing would fail) is
+  // distinguishable from "I'm broken" or "TLM's API is just down."
   app.get("/health", async (_req, res) => {
     const dbUp = mongoose.connection.readyState === 1;
     const ruleRepoDbUp = ruleRepoConnection.readyState === 1;
@@ -56,20 +51,14 @@ export function createApp(): Express {
     message: { error: "TooManyRequests", message: "Too many requests; slow down and try again later" },
   });
 
+  // Employee/EmployeeGroup/Site/Task/PayPeriodConfig/PayrollCalendar/Punch CRUD, and punch
+  // ingestion, are no longer exposed here — tlm-backend is now their sole public owner. This
+  // service's remaining routes (processing trigger, timesheet view/void) are meant to be called
+  // by tlm-backend as a trusted service identity, not directly by end-user JWTs — enforced
+  // operationally (only tlm-backend holds a punch-processor service-account token), not by new
+  // code here; `authenticate` still just verifies *a* valid TLM JWT, same as before.
   const v1 = express.Router();
   v1.use(globalRateLimiter);
-  // punchRouter MUST be mounted first: every router's `.use(authenticate)` runs unconditionally
-  // for ANY request reaching that router, regardless of whether one of its own routes ends up
-  // matching — Express doesn't scope an unprefixed `.use()` to "only requests this router will
-  // actually handle." A punch-ingest-key request (no Bearer header) would be rejected by the
-  // FIRST router's strict auth check before ever reaching punchRouter's own, more permissive
-  // authenticatePunchIngestOrUser if any stricter-auth router ran first.
-  v1.use(punchRouter);
-  v1.use(employeeRouter);
-  v1.use(employeeGroupRouter);
-  v1.use(siteRouter);
-  v1.use(taskRouter);
-  v1.use(payPeriodConfigRouter);
   v1.use(processingRouter);
   v1.use(timesheetRouter);
   app.use("/api/v1", v1);

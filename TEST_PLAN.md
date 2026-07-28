@@ -27,6 +27,12 @@ Regression: all 45 pre-existing TLM tests (auth, client, policy, ruleGroup, tena
 
 ## 2. New service: master data (Employee, EmployeeGroup, Site, Task, PayPeriodConfig, PayrollCalendar)
 
+> **Superseded**: this section and §3 describe CRUD/ingestion tests that lived in THIS repo when
+> they were first built. That public CRUD (and the tests below) has since moved to the sibling
+> `tlm-backend` service, which is now the sole owner — see its own test suite. Left here as
+> historical record of what was originally validated; this repo's engine only reads the resulting
+> data now.
+
 Per-module CRUD test pattern (mirrors TLM's `client.test.ts`/`user`-style tests):
 
 - Create/list/get/update happy path for each of the 6 collections.

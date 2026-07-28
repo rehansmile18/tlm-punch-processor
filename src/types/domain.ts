@@ -1,6 +1,6 @@
-// Same three roles as TLM, plus PUNCH_INGEST — a narrow role for kiosk/upstream time-clock
-// credentials that may only submit punches, never touch rule/employee/site configuration.
-export const USER_ROLES = ["PLATFORM_ADMIN", "CLIENT_ADMIN", "VIEWER", "PUNCH_INGEST"] as const;
+// Same roles TLM itself defines — this service resolves whatever role TLM's GET /users/me
+// returns for the caller's token, it never assigns one of its own.
+export const USER_ROLES = ["PLATFORM_ADMIN", "CLIENT_ADMIN", "VIEWER", "SITE_MANAGER"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const CADENCES = ["daily", "weekly", "biweekly", "semi_monthly", "monthly", "salaried"] as const;

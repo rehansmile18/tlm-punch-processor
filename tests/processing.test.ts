@@ -3,14 +3,38 @@ import { Types } from "mongoose";
 import { setupTestContext, seedAuthedUser, authed, TestContext } from "./helpers";
 import { setMockResolveLayeredHandler, resetMockRuleRepo } from "./mockRuleRepo";
 import { Employee } from "../src/models/employee.model";
-import { Site } from "../src/models/site.model";
-import { Task } from "../src/models/task.model";
 import { PayPeriodConfig } from "../src/models/payPeriodConfig.model";
-import { Punch } from "../src/models/punch.model";
+import { Punch, PunchDoc } from "../src/models/punch.model";
 import { Timesheet } from "../src/models/timesheet.model";
 import { ProcessingRun } from "../src/models/processingRun.model";
 import { processEmployeePeriod } from "../src/modules/processing/processing.service";
-import { correctPunch } from "../src/modules/punch/punch.service";
+
+/**
+ * Site/Task/Punch CRUD (including corrections) now lives in tlm-backend, not this repo — but this
+ * suite still needs to simulate "a punch got corrected" to exercise the ENGINE's cascade-reprocessing
+ * reaction to it. This replicates tlm-backend's punch.service.ts correction semantics directly
+ * against the Punch model this engine still reads: never mutate the original in place, create a
+ * replacement linked via correctionOfPunchId, and flip the original to "corrected".
+ */
+async function correctPunchForTest(id: string, clockOut: Date): Promise<PunchDoc> {
+  const original = await Punch.findOne({ _id: id });
+  if (!original) throw new Error(`Punch ${id} not found`);
+  const replacement = await Punch.create({
+    clientId: original.clientId,
+    employeeId: original.employeeId,
+    siteId: original.siteId,
+    task: original.task,
+    clockIn: original.clockIn,
+    clockOut,
+    timezone: original.timezone,
+    status: "closed",
+    correctionOfPunchId: original._id,
+  });
+  original.status = "corrected";
+  original.updatedAt = new Date();
+  await original.save();
+  return replacement;
+}
 
 interface FixtureRule {
   policyId: string;
@@ -88,8 +112,6 @@ describe("processing.service: processEmployeePeriod", () => {
       timezone: "UTC",
       payPeriodConfigId: payPeriodConfig._id,
     });
-    await Site.create({ clientId, siteId: "site-1", name: "Main Site", timezone: "UTC" });
-    await Task.create({ clientId, name: "Stocking" });
     return payPeriodConfig;
   }
 
@@ -274,7 +296,7 @@ describe("processing.service: processEmployeePeriod", () => {
     // replacement with a fresh updatedAt and marks the original "corrected", which the
     // orchestrator's query already excludes).
     const mondayPunch = await Punch.findOne({ clientId, employeeId: "emp-1", clockIn: new Date("2026-01-05T09:00:00.000Z") });
-    await correctPunch(String(mondayPunch!._id), { clockOut: new Date("2026-01-05T19:00:00.000Z") }, { clientId });
+    await correctPunchForTest(String(mondayPunch!._id), new Date("2026-01-05T19:00:00.000Z"));
 
     await processEmployeePeriod(String(clientId), "emp-1", "2026-01-09");
 
@@ -395,8 +417,6 @@ describe("processing API: POST /processing/runs", () => {
     });
     await Employee.create({ clientId, employeeId: "emp-a", timezone: "UTC", payPeriodConfigId: payPeriodConfig._id });
     await Employee.create({ clientId, employeeId: "emp-b", timezone: "UTC", payPeriodConfigId: payPeriodConfig._id });
-    await Site.create({ clientId, siteId: "site-1", name: "Main Site", timezone: "UTC" });
-    await Task.create({ clientId, name: "Stocking" });
 
     setMockResolveLayeredHandler(() => mockLayer({ policies: [RATE_POLICY, OVERTIME_POLICY] }));
 
