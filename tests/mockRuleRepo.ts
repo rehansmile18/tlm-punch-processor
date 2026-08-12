@@ -54,6 +54,13 @@ export function installMockRuleRepoFetch(): void {
   globalThis.fetch = (async (input: FetchInput, init?: FetchInit): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input.toString());
 
+    // ruleRepositoryClient.ts logs its own service account into TLM on demand rather than using a
+    // pre-minted JWT — this stands in for that login call. The exact token value doesn't matter
+    // here since none of the other mocked endpoints below validate it, only /users/me does.
+    if (url.pathname.endsWith("/auth/login") && (init?.method ?? "GET") === "POST") {
+      return jsonResponse({ token: "mock-rule-repo-service-token", user: { role: "PLATFORM_ADMIN", clientId: null } });
+    }
+
     if (url.pathname.endsWith("/users/me")) {
       const token = extractBearerToken(init);
       const profile = token ? profilesByToken.get(token) : undefined;

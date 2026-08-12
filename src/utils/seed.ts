@@ -2,17 +2,19 @@ import { env } from "../config/env";
 
 // This service has no User collection of its own (see middleware/auth.ts) — what it actually
 // needs to bootstrap is the one credential IT uses outbound: a PLATFORM_ADMIN service-account
-// User in TLM, whose JWT becomes this service's own RULE_REPO_SERVICE_JWT. Mirrors TLM's own
-// seed.ts in spirit (idempotent — "already exists, nothing to do" — minimal, clear console
-// output) even though the entity being seeded lives in a different service's database.
+// User in TLM. This script just ensures the account EXISTS; src/clients/ruleRepositoryClient.ts
+// logs into it fresh on demand at runtime (via RULE_REPO_SERVICE_ACCOUNT_EMAIL/PASSWORD), so
+// there's no JWT to mint or re-mint here. Mirrors TLM's own seed.ts in spirit (idempotent —
+// "already exists, nothing to do" — minimal, clear console output) even though the entity being
+// seeded lives in a different service's database.
 
 const SEED_EMAIL = process.env.SEED_SERVICE_ACCOUNT_EMAIL ?? "svc-punch-processor@internal";
 const SEED_PASSWORD = process.env.SEED_SERVICE_ACCOUNT_PASSWORD;
 
-function printToken(token: string): void {
-  console.log("\nRULE_REPO_SERVICE_JWT for this service's .env:\n");
-  console.log(token);
-  console.log("\nNote: this token expires per TLM's own JWT_EXPIRES_IN (default 12h) — re-run this script to mint a fresh one when it does.");
+function printServiceAccountEnv(): void {
+  console.log("\nSet these in this service's .env (this service logs in fresh on demand, so nothing here ever expires):\n");
+  console.log(`RULE_REPO_SERVICE_ACCOUNT_EMAIL=${SEED_EMAIL}`);
+  console.log(`RULE_REPO_SERVICE_ACCOUNT_PASSWORD=${SEED_PASSWORD}`);
 }
 
 async function main(): Promise<void> {
@@ -30,9 +32,8 @@ async function main(): Promise<void> {
     body: JSON.stringify({ email: SEED_EMAIL, password: SEED_PASSWORD }),
   });
   if (loginRes.ok) {
-    const { token } = (await loginRes.json()) as { token: string };
-    console.log(`Service-account user ${SEED_EMAIL} already exists in TLM — logged in, nothing to create.`);
-    printToken(token);
+    console.log(`Service-account user ${SEED_EMAIL} already exists in TLM — nothing to create.`);
+    printServiceAccountEnv();
     process.exit(0);
   }
 
@@ -70,18 +71,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`Created service-account user ${SEED_EMAIL} in TLM (role PLATFORM_ADMIN).`);
-
-  const freshLoginRes = await fetch(`${base}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: SEED_EMAIL, password: SEED_PASSWORD }),
-  });
-  if (!freshLoginRes.ok) {
-    console.error(`Created the user but could not log in as it: ${freshLoginRes.status} ${await freshLoginRes.text()}`);
-    process.exit(1);
-  }
-  const { token } = (await freshLoginRes.json()) as { token: string };
-  printToken(token);
+  printServiceAccountEnv();
   process.exit(0);
 }
 

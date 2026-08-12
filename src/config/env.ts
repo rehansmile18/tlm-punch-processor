@@ -44,10 +44,14 @@ export const env = {
 
   // The Rule Repository this service is a downstream consumer of.
   ruleRepoBaseUrl: process.env.RULE_REPO_BASE_URL ?? "http://localhost:4000/api/v1",
-  // A long-lived JWT for a PLATFORM_ADMIN service-account User seeded in TLM (see
-  // src/utils/seed.ts and the README) — used only for this service's own outbound calls to TLM's
-  // API (policy-types, assignments/resolve-layered), never exposed to this service's own callers.
-  ruleRepoServiceJwt: resolveSecret("RULE_REPO_SERVICE_JWT", "dev-secret-change-me"),
+  // Credentials for a PLATFORM_ADMIN service-account User seeded in TLM (see src/utils/seed.ts and
+  // the README) — used only for this service's own outbound calls to TLM's API (policy-types,
+  // assignments/resolve-layered), never exposed to this service's own callers. Stored as
+  // email/password rather than a pre-minted JWT: clients/ruleRepositoryClient.ts logs in fresh
+  // whenever its cached token is missing or near expiry, so this credential itself never expires
+  // the way a static JWT would (TLM's own JWT_EXPIRES_IN, 12h by default).
+  ruleRepoServiceAccountEmail: process.env.RULE_REPO_SERVICE_ACCOUNT_EMAIL ?? "svc-punch-processor@internal",
+  ruleRepoServiceAccountPassword: resolveSecret("RULE_REPO_SERVICE_ACCOUNT_PASSWORD", "dev-secret-change-me"),
 
   processingConcurrency: Number(process.env.PROCESSING_CONCURRENCY ?? 8),
   lockLeaseMs: Number(process.env.LOCK_LEASE_MS ?? 60_000),

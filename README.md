@@ -64,15 +64,16 @@ Check it's up:
 curl http://localhost:4100/health
 ```
 
-### Getting a `RULE_REPO_SERVICE_JWT`
+### Setting up the Rule Repository service account
 
 This service calls TLM's own API outbound (policy types, layered assignment resolution) using a
-dedicated `PLATFORM_ADMIN` service-account user in TLM — not a human's login token. Concretely,
-against a running TLM instance:
+dedicated `PLATFORM_ADMIN` service-account user in TLM — not a human's login token. Unlike a
+pre-minted JWT, this service logs into that account itself at runtime whenever its cached token is
+missing or near expiry (see `src/clients/ruleRepositoryClient.ts`), so there's nothing to
+periodically re-mint — just make sure the account exists and its credentials are in `.env`.
+`npm run seed` automates this; to do it by hand against a running TLM instance:
 
 ```bash
-# 1. Log in as TLM's existing PLATFORM_ADMIN (from TLM's own `npm run seed`, or any admin you
-#    already have), then create a dedicated service-account user for this purpose:
 curl -X POST http://localhost:4000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com","password":"<TLM SEED_ADMIN_PASSWORD>"}'
@@ -80,19 +81,9 @@ curl -X POST http://localhost:4000/api/v1/auth/login \
 
 curl -X POST http://localhost:4000/api/v1/users \
   -H "Authorization: Bearer <admin token>" -H "Content-Type: application/json" \
-  -d '{"email":"punch-processor-svc@tlm.local","password":"<a real password>","role":"PLATFORM_ADMIN"}'
-
-# 2. Log in as that new service-account user — the returned token is the value for
-#    RULE_REPO_SERVICE_JWT:
-curl -X POST http://localhost:4000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"punch-processor-svc@tlm.local","password":"<a real password>"}'
+  -d '{"email":"svc-punch-processor@internal","password":"<a real password>","role":"PLATFORM_ADMIN"}'
+# -> set RULE_REPO_SERVICE_ACCOUNT_EMAIL/PASSWORD in .env to this email/password
 ```
-
-TLM's tokens expire after `JWT_EXPIRES_IN` (TLM default: 12h), and TLM has no refresh-token
-mechanism today, so a token minted this way is **not** truly permanent — for anything beyond quick
-local testing, either re-run step 2 periodically to mint a fresh token, or set a longer
-`JWT_EXPIRES_IN` on the TLM side for this specific service account.
 
 ```bash
 npm test                    # vitest + mongodb-memory-server, no external database needed
@@ -114,8 +105,8 @@ lives elsewhere. It also assumes TLM's own MongoDB is reachable on the host at
 `host.docker.internal:27017` with TLM's own compose-default credentials — override
 `RULE_REPO_MONGODB_URI` if TLM's database lives elsewhere or uses different credentials. See the
 comments in `docker-compose.yml` for how to point both at a real TLM instance and supply real
-`JWT_SECRET` / `RULE_REPO_SERVICE_JWT` values — the app refuses to boot on placeholder secrets
-outside `NODE_ENV=development`/`test`, same as TLM.
+`JWT_SECRET` / `RULE_REPO_SERVICE_ACCOUNT_PASSWORD` values — the app refuses to boot on placeholder
+secrets outside `NODE_ENV=development`/`test`, same as TLM.
 
 ## Environment variables
 
@@ -127,7 +118,7 @@ See [`.env.example`](.env.example) for the full list with explanations. Notable 
 | `RULE_REPO_MONGODB_URI` | TLM's own MongoDB connection string — Employee/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch live there (owned by tlm-backend); must point at the SAME database TLM itself uses |
 | `JWT_SECRET` | Must be the **same value** as TLM's `JWT_SECRET` — this service verifies the identical human-login JWTs TLM issues, it does not mint its own |
 | `RULE_REPO_BASE_URL` | Base URL of the TLM API this service calls outbound (include `/api/v1`) |
-| `RULE_REPO_SERVICE_JWT` | Long-lived JWT for a `PLATFORM_ADMIN` service-account user seeded in TLM, used only for this service's own outbound calls to TLM |
+| `RULE_REPO_SERVICE_ACCOUNT_EMAIL` / `_PASSWORD` | Credentials for a `PLATFORM_ADMIN` service-account user seeded in TLM, used only for this service's own outbound calls to TLM — this service logs in fresh on demand, so these never expire the way a pre-minted JWT would |
 | `PROCESSING_CONCURRENCY` | How many employee+pay-period jobs run concurrently in a processing batch |
 | `LOCK_LEASE_MS` | How long a `ProcessingLock` is held before the stale-lock reaper may reclaim it |
 | `USER_PROFILE_CACHE_MS` | How long a cached TLM `GET /users/me` lookup (role/clientId/status) is trusted before re-checking |
@@ -140,13 +131,14 @@ This service accepts human TLM-issued JWTs the same way it always has — verifi
 account status resolved **live** from TLM's `GET /users/me` (this service has no `User` collection
 of its own), cached per-token for `USER_PROFILE_CACHE_MS` (default 60s). What's changed is who is
 expected to hold one: the only intended caller of `/processing/runs` and `/timesheets/*` now is
-tlm-backend, authenticating with a dedicated `PLATFORM_ADMIN` service-account token (see "Getting a
-`RULE_REPO_SERVICE_JWT`" above — tlm-backend's own equivalent is `PUNCH_PROCESSOR_SERVICE_JWT`,
-seeded the same way). This is an **operational** boundary, not a code one: `authenticate` itself
-still just verifies *a* valid TLM JWT and doesn't distinguish "a real end user" from "tlm-backend's
-service account" — nothing stops a valid human JWT from calling these routes directly, tlm-backend
-is simply the only party expected to hold a token for this purpose. `RULE_REPO_SERVICE_JWT` is the
-other direction: used by THIS service, outbound, to authenticate its own calls to TLM's API
+tlm-backend, authenticating with a dedicated `PLATFORM_ADMIN` service-account token (see "Setting
+up the Rule Repository service account" above — tlm-backend's own equivalent account is
+`PUNCH_PROCESSOR_SERVICE_ACCOUNT_EMAIL`/`_PASSWORD`, seeded the same way). This is an
+**operational** boundary, not a code one: `authenticate` itself still just verifies *a* valid TLM
+JWT and doesn't distinguish "a real end user" from "tlm-backend's service account" — nothing stops
+a valid human JWT from calling these routes directly, tlm-backend is simply the only party expected
+to hold a token for this purpose. `RULE_REPO_SERVICE_ACCOUNT_EMAIL`/`_PASSWORD` are the other
+direction: used by THIS service, outbound, to log itself into TLM's API on demand
 (`GET /policy-types`, `GET /assignments/resolve-layered`) — never accepted as an inbound credential.
 
 Employee/Site/Task/EmployeeGroup/PayPeriodConfig/PayrollCalendar/Punch CRUD and punch ingestion —
