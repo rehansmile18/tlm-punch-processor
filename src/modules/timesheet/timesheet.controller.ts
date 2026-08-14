@@ -42,3 +42,28 @@ export const voidTimesheetHandler = asyncHandler(async (req: Request, res: Respo
   const doc = await timesheetService.voidTimesheet(req.params.id, reason, getReadClientFilter(req), req.auth?.userId);
   res.json(doc);
 });
+
+export const listTimesheetSiteGroupsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { siteId, siteIds, payPeriodId, includeSuperseded, page, pageSize } = req.query as unknown as {
+    siteId?: string;
+    siteIds?: string;
+    payPeriodId?: string;
+    includeSuperseded?: boolean;
+    page: number;
+    pageSize: number;
+  };
+  const result = await timesheetService.listTimesheetSiteGroups(
+    getReadClientFilter(req),
+    { siteId, siteIds: siteIds ? siteIds.split(",").filter(Boolean) : undefined, payPeriodId, includeSuperseded },
+    page,
+    pageSize
+  );
+  res.json(result);
+});
+
+export const getTimesheetGridHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { siteId, payPeriodId } = req.params as { siteId: string; payPeriodId: string };
+  const { includeSuperseded } = req.query as unknown as { includeSuperseded?: boolean };
+  const grid = await timesheetService.getTimesheetGridForSite(siteId, payPeriodId, getReadClientFilter(req), includeSuperseded);
+  res.json(grid);
+});

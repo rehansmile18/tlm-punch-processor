@@ -74,6 +74,31 @@ export function businessDateInZone(instant: Date, timezone: string): string {
   return formatInTimeZone(instant, timezone, "yyyy-MM-dd");
 }
 
+/** Every calendar date from `startDateStr` to `endDateStr` inclusive. */
+export function enumerateBusinessDates(startDateStr: string, endDateStr: string): string[] {
+  const dates: string[] = [];
+  let cursor = startDateStr;
+  // A pay period is bounded (longest supported cadence is ~monthly, ~31 days) — no risk of a
+  // runaway loop, but cap defensively in case of a misconfigured period.
+  for (let i = 0; i < 62 && cursor <= endDateStr; i++) {
+    dates.push(cursor);
+    cursor = addCalendarDays(cursor, 1);
+  }
+  return dates;
+}
+
+/**
+ * Every payPeriodId this module produces embeds its PayPeriodConfig's own ObjectId as the second
+ * hyphen-delimited segment (e.g. "W-<configId>-2026-08-01", "SM-<configId>-2026-08-1") — the
+ * prefix and every other segment are alphanumeric with no hyphens, so this is a stable, reliable
+ * way to recover which config produced a given payPeriodId without a second lookup table.
+ */
+export function extractPayPeriodConfigId(payPeriodId: string): string {
+  const configId = payPeriodId.split("-")[1];
+  if (!configId) throw new Error(`Malformed payPeriodId, cannot extract config id: ${payPeriodId}`);
+  return configId;
+}
+
 function resolveDaily(config: PayPeriodConfigDoc, dateStr: string): ResolvedPayPeriod {
   return {
     start: toRealStart(dateStr, config.timezone),

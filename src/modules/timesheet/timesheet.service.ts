@@ -1,8 +1,10 @@
-import { Types } from "mongoose";
+import { PipelineStage, Types } from "mongoose";
 import { Timesheet, TimesheetDoc, TimesheetLine } from "../../models/timesheet.model";
 import { ProcessingAuditEntry } from "../../models/processingAudit.model";
+import { PayPeriodConfig } from "../../models/payPeriodConfig.model";
 import { TimesheetStatus } from "../../types/domain";
 import { BadRequestError, NotFoundError } from "../../utils/errors";
+import { businessDateInZone, enumerateBusinessDates, extractPayPeriodConfigId } from "../../utils/payPeriod";
 
 export interface ListTimesheetsFilters {
   employeeId?: string;
@@ -159,4 +161,200 @@ export async function createTimesheetVersion(input: CreateTimesheetVersionInput)
     supersedesTimesheetId,
   });
   return doc;
+}
+
+export interface ListTimesheetSiteGroupsFilters {
+  siteId?: string;
+  siteIds?: string[];
+  payPeriodId?: string;
+  includeSuperseded?: boolean;
+}
+
+export interface TimesheetSiteGroup {
+  siteId: string;
+  payPeriodId: string;
+  periodStart: Date;
+  periodEnd: Date;
+  payDate: Date;
+  employeeCount: number;
+  totalHours: number;
+  totalAmount: number;
+  stale: boolean;
+}
+
+/**
+ * Groups existing per-employee Timesheets by (siteId, payPeriodId) for display purposes — the
+ * persisted unit of record stays exactly one Timesheet per (employee, payPeriodId), with its own
+ * locking/versioning/void/audit trail untouched. This just re-shapes lines across the employee
+ * timesheets that share a pay period into "who worked this site during this period" groups. An
+ * employee who split time across two sites in the same period appears in both sites' groups,
+ * each only counting the lines that actually belong to that site.
+ *
+ * payPeriodId always embeds its PayPeriodConfig's own ObjectId (see utils/payPeriod.ts), so two
+ * employees only ever share a payPeriodId when they share the exact same config — periodStart/
+ * periodEnd/payDate are therefore identical across every timesheet in a group, safe to take with
+ * $first rather than needing to reconcile mismatched values.
+ */
+export async function listTimesheetSiteGroups(
+  tenantFilter: Record<string, unknown>,
+  filters: ListTimesheetSiteGroupsFilters,
+  page: number,
+  pageSize: number
+): Promise<{ items: TimesheetSiteGroup[]; total: number; page: number; pageSize: number }> {
+  const match: Record<string, unknown> = { ...tenantFilter };
+  if (filters.payPeriodId) match.payPeriodId = filters.payPeriodId;
+  if (!filters.includeSuperseded) match.status = { $ne: "superseded" };
+
+  const lineMatch: Record<string, unknown> = {};
+  if (filters.siteId) lineMatch["lines.siteId"] = filters.siteId;
+  else if (filters.siteIds?.length) lineMatch["lines.siteId"] = { $in: filters.siteIds };
+
+  const basePipeline: PipelineStage[] = [
+    { $match: match },
+    { $unwind: "$lines" },
+    ...(Object.keys(lineMatch).length > 0 ? [{ $match: lineMatch }] : []),
+    {
+      $group: {
+        _id: { siteId: "$lines.siteId", payPeriodId: "$payPeriodId" },
+        employeeIds: { $addToSet: "$lines.employeeId" },
+        totalHours: { $sum: "$lines.totalHours" },
+        totalAmount: { $sum: "$lines.totalAmount" },
+        periodStart: { $first: "$periodStart" },
+        periodEnd: { $first: "$periodEnd" },
+        payDate: { $first: "$payDate" },
+        anyStale: { $max: { $cond: ["$stale", 1, 0] } },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        siteId: "$_id.siteId",
+        payPeriodId: "$_id.payPeriodId",
+        employeeCount: { $size: "$employeeIds" },
+        totalHours: 1,
+        totalAmount: 1,
+        periodStart: 1,
+        periodEnd: 1,
+        payDate: 1,
+        stale: { $eq: ["$anyStale", 1] },
+      },
+    },
+    { $sort: { periodStart: -1, siteId: 1 } },
+  ];
+
+  const [items, countResult] = await Promise.all([
+    Timesheet.aggregate([...basePipeline, { $skip: (page - 1) * pageSize }, { $limit: pageSize }]),
+    Timesheet.aggregate([...basePipeline, { $count: "count" }]),
+  ]);
+
+  return { items, total: countResult[0]?.count ?? 0, page, pageSize };
+}
+
+export interface TimesheetGridCell {
+  task: string;
+  totalHours: number;
+  totalAmount: number;
+  rateType: "hourly" | "salary";
+  rate: number;
+}
+
+export interface TimesheetGridRow {
+  employeeId: string;
+  timesheetId: string;
+  status: TimesheetStatus;
+  stale: boolean;
+  version: number;
+  cellsByDate: Record<string, TimesheetGridCell>;
+  totalHours: number;
+  totalAmount: number;
+}
+
+export interface TimesheetGrid {
+  siteId: string;
+  payPeriodId: string;
+  periodStart: Date;
+  periodEnd: Date;
+  payDate: Date;
+  dates: string[];
+  rows: TimesheetGridRow[];
+  totals: { employeeCount: number; totalHours: number; totalAmount: number };
+}
+
+/**
+ * Builds the site+period grid: one row per employee who has at least one line at `siteId` within
+ * `payPeriodId`, one column per calendar date spanning the period (not just the dates someone
+ * actually worked, so gaps read as blanks rather than being silently skipped).
+ */
+export async function getTimesheetGridForSite(
+  siteId: string,
+  payPeriodId: string,
+  tenantFilter: Record<string, unknown>,
+  includeSuperseded?: boolean
+): Promise<TimesheetGrid> {
+  const query: Record<string, unknown> = { ...tenantFilter, payPeriodId, "lines.siteId": siteId };
+  if (!includeSuperseded) query.status = { $ne: "superseded" };
+
+  const timesheets = await Timesheet.find(query).lean();
+  if (timesheets.length === 0) {
+    throw new NotFoundError(`No timesheets found for site ${siteId} in pay period ${payPeriodId}`);
+  }
+
+  const periodStart = timesheets[0].periodStart;
+  const periodEnd = timesheets[0].periodEnd;
+  const payDate = timesheets[0].payDate;
+
+  // Production payPeriodId values always embed a real PayPeriodConfig id (see utils/payPeriod.ts),
+  // but this is purely for computing grid column headers — fall back to UTC rather than throwing
+  // if a payPeriodId ever doesn't follow that format (e.g. a hand-seeded/legacy value).
+  let timezone = "UTC";
+  try {
+    const configId = extractPayPeriodConfigId(payPeriodId);
+    if (Types.ObjectId.isValid(configId)) {
+      const payPeriodConfig = await PayPeriodConfig.findById(configId).lean();
+      if (payPeriodConfig) timezone = payPeriodConfig.timezone;
+    }
+  } catch {
+    // malformed payPeriodId — keep the UTC fallback
+  }
+  const dates = enumerateBusinessDates(businessDateInZone(periodStart, timezone), businessDateInZone(periodEnd, timezone));
+
+  const rows: TimesheetGridRow[] = timesheets.map((ts) => {
+    const matchedLines = ts.lines.filter((line) => line.siteId === siteId);
+    const cellsByDate: Record<string, TimesheetGridCell> = {};
+    for (const line of matchedLines) {
+      cellsByDate[line.businessDate] = {
+        task: line.task,
+        totalHours: line.totalHours,
+        totalAmount: line.totalAmount,
+        rateType: line.rateType,
+        rate: line.rate,
+      };
+    }
+    return {
+      employeeId: ts.employeeId,
+      timesheetId: String(ts._id),
+      status: ts.status,
+      stale: ts.stale,
+      version: ts.version,
+      cellsByDate,
+      totalHours: matchedLines.reduce((sum, line) => sum + line.totalHours, 0),
+      totalAmount: matchedLines.reduce((sum, line) => sum + line.totalAmount, 0),
+    };
+  });
+  rows.sort((a, b) => a.employeeId.localeCompare(b.employeeId));
+
+  return {
+    siteId,
+    payPeriodId,
+    periodStart,
+    periodEnd,
+    payDate,
+    dates,
+    rows,
+    totals: {
+      employeeCount: rows.length,
+      totalHours: rows.reduce((sum, row) => sum + row.totalHours, 0),
+      totalAmount: rows.reduce((sum, row) => sum + row.totalAmount, 0),
+    },
+  };
 }

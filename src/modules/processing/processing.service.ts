@@ -13,6 +13,7 @@ import {
   businessDateInZone,
   addCalendarDays,
   resolveWeekStart,
+  enumerateBusinessDates,
 } from "../../utils/payPeriod";
 import { buildSegmentsFromPunches, hasOpenPunch } from "../../engine/segments";
 import { resolveAndOrderLayers } from "../../engine/resolveLayers";
@@ -42,19 +43,6 @@ async function resolveEmployeePayPeriodConfig(employee: EmployeeDoc): Promise<Pa
     if (group) return PayPeriodConfig.findById(group.payPeriodConfigId).lean();
   }
   return null;
-}
-
-/** Every calendar date from `startDateStr` to `endDateStr` inclusive. */
-function enumerateBusinessDates(startDateStr: string, endDateStr: string): string[] {
-  const dates: string[] = [];
-  let cursor = startDateStr;
-  // A pay period is bounded (longest supported cadence is ~monthly, ~31 days) — no risk of a
-  // runaway loop, but cap defensively in case of a misconfigured period.
-  for (let i = 0; i < 62 && cursor <= endDateStr; i++) {
-    dates.push(cursor);
-    cursor = addCalendarDays(cursor, 1);
-  }
-  return dates;
 }
 
 /**

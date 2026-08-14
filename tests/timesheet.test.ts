@@ -3,6 +3,7 @@ import { Types } from "mongoose";
 import { setupTestContext, seedAuthedUser, authed, TestContext } from "./helpers";
 import { Timesheet } from "../src/models/timesheet.model";
 import { ProcessingAuditEntry } from "../src/models/processingAudit.model";
+import { PayPeriodConfig } from "../src/models/payPeriodConfig.model";
 import { createTimesheetVersion } from "../src/modules/timesheet/timesheet.service";
 
 function seedAuditEntry(runId: Types.ObjectId, sequenceIndex: number) {
@@ -225,6 +226,174 @@ describe("timesheet module", () => {
 
       const reloadedV1 = await Timesheet.findById(v1._id).lean();
       expect(reloadedV1?.status).toBe("superseded");
+    });
+  });
+
+  describe("site-grouped timesheets", () => {
+    function line(overrides: Record<string, unknown>) {
+      return {
+        businessDate: "2026-08-03",
+        siteId: "site-a",
+        employeeId: "grid-emp",
+        task: "Cleaning",
+        rate: 20,
+        rateType: "hourly" as const,
+        dailyAmount: 160,
+        additionalAmount: 0,
+        additionalHours: 0,
+        totalHours: 8,
+        totalAmount: 160,
+        runId: new Types.ObjectId(),
+        ...overrides,
+      };
+    }
+
+    it("groups multiple employees' timesheets by (siteId, payPeriodId), summing only that site's lines", async () => {
+      const groupClientId = new Types.ObjectId(clientId);
+      const config = await PayPeriodConfig.create({
+        clientId: groupClientId,
+        name: "Weekly (group test)",
+        cadence: "weekly",
+        timezone: "UTC",
+        weekStartDay: 1,
+        payDateOffsetDays: 5,
+        producesHourlyLines: true,
+      });
+      const payPeriodId = `W-${config._id}-2026-08-03`;
+
+      // emp-1 works only at site-a; emp-2 splits across site-a and site-b in the same period.
+      await seedTimesheet({
+        clientId: groupClientId,
+        employeeId: "group-emp-1",
+        payPeriodId,
+        periodStart: new Date("2026-08-03"),
+        periodEnd: new Date("2026-08-09"),
+        lines: [line({ employeeId: "group-emp-1", businessDate: "2026-08-03", siteId: "site-a", totalHours: 8, totalAmount: 160 })],
+        totalHours: 8,
+        totalAmount: 160,
+      });
+      await seedTimesheet({
+        clientId: groupClientId,
+        employeeId: "group-emp-2",
+        payPeriodId,
+        periodStart: new Date("2026-08-03"),
+        periodEnd: new Date("2026-08-09"),
+        lines: [
+          line({ employeeId: "group-emp-2", businessDate: "2026-08-03", siteId: "site-a", totalHours: 6, totalAmount: 120 }),
+          line({ employeeId: "group-emp-2", businessDate: "2026-08-04", siteId: "site-b", totalHours: 7, totalAmount: 140 }),
+        ],
+        totalHours: 13,
+        totalAmount: 260,
+      });
+
+      const listRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/by-site?payPeriodId=${payPeriodId}`);
+      expect(listRes.status).toBe(200);
+      const groups = listRes.body.items as { siteId: string; employeeCount: number; totalHours: number; totalAmount: number }[];
+      const siteA = groups.find((g) => g.siteId === "site-a");
+      const siteB = groups.find((g) => g.siteId === "site-b");
+      expect(siteA).toMatchObject({ employeeCount: 2, totalHours: 14, totalAmount: 280 });
+      expect(siteB).toMatchObject({ employeeCount: 1, totalHours: 7, totalAmount: 140 });
+
+      const siteFilteredRes = await authed(ctx.app, adminToken).get(
+        `/api/v1/timesheets/by-site?payPeriodId=${payPeriodId}&siteId=site-a`
+      );
+      expect(siteFilteredRes.body.items).toHaveLength(1);
+      expect(siteFilteredRes.body.items[0].siteId).toBe("site-a");
+    });
+
+    it("builds a grid with one row per employee at that site, cells only for that site's lines, and dates spanning the full period", async () => {
+      const gridClientId = new Types.ObjectId(clientId);
+      const config = await PayPeriodConfig.create({
+        clientId: gridClientId,
+        name: "Weekly (grid test)",
+        cadence: "weekly",
+        timezone: "UTC",
+        weekStartDay: 1,
+        payDateOffsetDays: 5,
+        producesHourlyLines: true,
+      });
+      const payPeriodId = `W-${config._id}-2026-08-03`;
+
+      await seedTimesheet({
+        clientId: gridClientId,
+        employeeId: "grid-emp-1",
+        payPeriodId,
+        periodStart: new Date("2026-08-03"),
+        periodEnd: new Date("2026-08-09"),
+        lines: [
+          line({ employeeId: "grid-emp-1", businessDate: "2026-08-03", siteId: "site-grid", task: "Cleaning" }),
+          line({ employeeId: "grid-emp-1", businessDate: "2026-08-04", siteId: "site-grid", task: "Cleaning" }),
+        ],
+        totalHours: 16,
+        totalAmount: 320,
+      });
+      // Works elsewhere this period — should NOT show up in site-grid's grid at all.
+      await seedTimesheet({
+        clientId: gridClientId,
+        employeeId: "grid-emp-2",
+        payPeriodId,
+        periodStart: new Date("2026-08-03"),
+        periodEnd: new Date("2026-08-09"),
+        lines: [line({ employeeId: "grid-emp-2", businessDate: "2026-08-05", siteId: "site-other" })],
+        totalHours: 8,
+        totalAmount: 160,
+      });
+
+      const res = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/by-site/site-grid/${payPeriodId}`);
+      expect(res.status).toBe(200);
+      expect(res.body.dates).toEqual([
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07",
+        "2026-08-08",
+        "2026-08-09",
+      ]);
+      expect(res.body.rows).toHaveLength(1);
+      expect(res.body.rows[0].employeeId).toBe("grid-emp-1");
+      expect(res.body.rows[0].totalHours).toBe(16);
+      expect(Object.keys(res.body.rows[0].cellsByDate).sort()).toEqual(["2026-08-03", "2026-08-04"]);
+      expect(res.body.rows[0].cellsByDate["2026-08-03"]).toMatchObject({ task: "Cleaning", totalHours: 8 });
+      expect(res.body.totals).toMatchObject({ employeeCount: 1, totalHours: 16, totalAmount: 320 });
+    });
+
+    it("404s for a site+period with no matching timesheets", async () => {
+      const res = await authed(ctx.app, adminToken).get("/api/v1/timesheets/by-site/no-such-site/no-such-period");
+      expect(res.status).toBe(404);
+    });
+
+    it("scopes both endpoints to the caller's own client", async () => {
+      const otherClient = new Types.ObjectId(otherClientId);
+      const config = await PayPeriodConfig.create({
+        clientId: otherClient,
+        name: "Weekly (cross-tenant test)",
+        cadence: "weekly",
+        timezone: "UTC",
+        weekStartDay: 1,
+        payDateOffsetDays: 5,
+        producesHourlyLines: true,
+      });
+      const payPeriodId = `W-${config._id}-2026-08-03`;
+      await seedTimesheet({
+        clientId: otherClient,
+        employeeId: "cross-tenant-emp",
+        payPeriodId,
+        periodStart: new Date("2026-08-03"),
+        periodEnd: new Date("2026-08-09"),
+        lines: [line({ employeeId: "cross-tenant-emp", siteId: "cross-tenant-site" })],
+      });
+
+      const listRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/by-site?payPeriodId=${payPeriodId}`);
+      expect(listRes.body.items).toHaveLength(0);
+
+      const gridRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/by-site/cross-tenant-site/${payPeriodId}`);
+      expect(gridRes.status).toBe(404);
+
+      const ownGridRes = await authed(ctx.app, otherClientAdminToken).get(
+        `/api/v1/timesheets/by-site/cross-tenant-site/${payPeriodId}`
+      );
+      expect(ownGridRes.status).toBe(200);
     });
   });
 });
