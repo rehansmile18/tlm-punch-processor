@@ -13,6 +13,51 @@ export interface ListTimesheetsFilters {
   includeSuperseded?: boolean;
 }
 
+export interface PeriodDates {
+  periodStartDate: string;
+  periodEndDate: string;
+}
+
+/**
+ * periodStart/periodEnd are stored as exact UTC instants marking local midnight and local
+ * 23:59:59.999 IN THE PAY PERIOD CONFIG'S OWN TIMEZONE (see utils/payPeriod.ts) — not the
+ * viewer's. Formatting those instants directly in whatever timezone happens to be reading them
+ * (a browser rendering "MMM d, yyyy" in its own local time) can round the displayed calendar date
+ * forward or back by a day, e.g. a period ending "2026-01-11 23:59:59.999 UTC" reads as "Jan 12"
+ * to a viewer in a positive UTC offset. periodStartDate/periodEndDate are the period's own,
+ * unambiguous calendar-date strings — safe to display as-is in any timezone.
+ */
+async function attachPeriodDates<T extends { payPeriodId: string; periodStart: Date; periodEnd: Date }>(
+  items: T[]
+): Promise<(T & PeriodDates)[]> {
+  const configIds = new Set<string>();
+  for (const item of items) {
+    try {
+      const configId = extractPayPeriodConfigId(item.payPeriodId);
+      if (Types.ObjectId.isValid(configId)) configIds.add(configId);
+    } catch {
+      // malformed payPeriodId — this item falls back to UTC below
+    }
+  }
+  const configs = configIds.size > 0 ? await PayPeriodConfig.find({ _id: { $in: [...configIds] } }).lean() : [];
+  const timezoneByConfigId = new Map(configs.map((c) => [String(c._id), c.timezone]));
+
+  return items.map((item) => {
+    let timezone = "UTC";
+    try {
+      const configId = extractPayPeriodConfigId(item.payPeriodId);
+      timezone = timezoneByConfigId.get(configId) ?? "UTC";
+    } catch {
+      // keep the UTC fallback
+    }
+    return {
+      ...item,
+      periodStartDate: businessDateInZone(item.periodStart, timezone),
+      periodEndDate: businessDateInZone(item.periodEnd, timezone),
+    };
+  });
+}
+
 export async function listTimesheets(
   tenantFilter: Record<string, unknown>,
   filters: ListTimesheetsFilters,
@@ -32,7 +77,7 @@ export async function listTimesheets(
     query.status = { $ne: "superseded" };
   }
 
-  const [items, total] = await Promise.all([
+  const [rawItems, total] = await Promise.all([
     Timesheet.find(query)
       .sort({ createdAt: -1 })
       .skip((page - 1) * pageSize)
@@ -40,13 +85,15 @@ export async function listTimesheets(
       .lean(),
     Timesheet.countDocuments(query),
   ]);
+  const items = await attachPeriodDates(rawItems);
   return { items, total, page, pageSize };
 }
 
 export async function getTimesheet(id: string, tenantFilter: Record<string, unknown>) {
   const doc = await Timesheet.findOne({ _id: id, ...tenantFilter }).lean();
   if (!doc) throw new NotFoundError(`Timesheet ${id} not found`);
-  return doc;
+  const [withDates] = await attachPeriodDates([doc]);
+  return withDates;
 }
 
 /**
@@ -170,7 +217,7 @@ export interface ListTimesheetSiteGroupsFilters {
   includeSuperseded?: boolean;
 }
 
-export interface TimesheetSiteGroup {
+export interface TimesheetSiteGroup extends PeriodDates {
   siteId: string;
   payPeriodId: string;
   periodStart: Date;
@@ -242,10 +289,11 @@ export async function listTimesheetSiteGroups(
     { $sort: { periodStart: -1, siteId: 1 } },
   ];
 
-  const [items, countResult] = await Promise.all([
+  const [rawItems, countResult] = await Promise.all([
     Timesheet.aggregate([...basePipeline, { $skip: (page - 1) * pageSize }, { $limit: pageSize }]),
     Timesheet.aggregate([...basePipeline, { $count: "count" }]),
   ]);
+  const items = await attachPeriodDates(rawItems);
 
   return { items, total: countResult[0]?.count ?? 0, page, pageSize };
 }
@@ -269,7 +317,7 @@ export interface TimesheetGridRow {
   totalAmount: number;
 }
 
-export interface TimesheetGrid {
+export interface TimesheetGrid extends PeriodDates {
   siteId: string;
   payPeriodId: string;
   periodStart: Date;
@@ -348,6 +396,10 @@ export async function getTimesheetGridForSite(
     payPeriodId,
     periodStart,
     periodEnd,
+    // The period's own calendar-date boundaries, not a browser-timezone-dependent reading of the
+    // UTC instants above — same values as dates[0]/dates[dates.length - 1], no extra lookup needed.
+    periodStartDate: dates[0],
+    periodEndDate: dates[dates.length - 1],
     payDate,
     dates,
     rows,

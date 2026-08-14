@@ -248,6 +248,48 @@ describe("timesheet module", () => {
       };
     }
 
+    it("periodEndDate is the period's own last calendar day, not a timezone-shifted reading of the stored instant", async () => {
+      // Regression: periodEnd is stored as 2026-01-11T23:59:59.999Z. A naive Date-instant read of
+      // that in a positive-UTC-offset timezone rounds forward to "Jan 12" — which is exactly what
+      // a user reported seeing as the displayed period end for a period that only ever ran Mon
+      // Jan 5 through Sun Jan 11.
+      const regressionClientId = new Types.ObjectId(clientId);
+      const config = await PayPeriodConfig.create({
+        clientId: regressionClientId,
+        name: "Weekly (period-end regression)",
+        cadence: "weekly",
+        timezone: "UTC",
+        weekStartDay: 1, // Monday
+        payDateOffsetDays: 5,
+        producesHourlyLines: true,
+      });
+      const payPeriodId = `W-${config._id}-2026-01-05`;
+      const doc = await seedTimesheet({
+        clientId: regressionClientId,
+        employeeId: "period-end-emp",
+        payPeriodId,
+        periodStart: new Date("2026-01-05T00:00:00.000Z"),
+        periodEnd: new Date("2026-01-11T23:59:59.999Z"),
+        lines: [line({ employeeId: "period-end-emp", businessDate: "2026-01-05", siteId: "site-period-end" })],
+      });
+
+      const getRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/${doc._id}`);
+      expect(getRes.body.periodStartDate).toBe("2026-01-05");
+      expect(getRes.body.periodEndDate).toBe("2026-01-11");
+
+      const listRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets?payPeriodId=${payPeriodId}`);
+      expect(listRes.body.items[0].periodEndDate).toBe("2026-01-11");
+
+      const groupRes = await authed(ctx.app, adminToken).get(`/api/v1/timesheets/by-site?payPeriodId=${payPeriodId}`);
+      expect(groupRes.body.items[0].periodEndDate).toBe("2026-01-11");
+
+      const gridRes = await authed(ctx.app, adminToken).get(
+        `/api/v1/timesheets/by-site/site-period-end/${payPeriodId}`
+      );
+      expect(gridRes.body.periodEndDate).toBe("2026-01-11");
+      expect(gridRes.body.dates).toEqual(["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-10", "2026-01-11"]);
+    });
+
     it("groups multiple employees' timesheets by (siteId, payPeriodId), summing only that site's lines", async () => {
       const groupClientId = new Types.ObjectId(clientId);
       const config = await PayPeriodConfig.create({
