@@ -149,6 +149,36 @@ describe("processing.service: processEmployeePeriod", () => {
     expect(timesheet!.payDate.toISOString().slice(0, 10)).toBe("2026-01-16");
   });
 
+  it("still computes real hours/amount from a punch when the resolved rule group has no OVERTIME policy", async () => {
+    // Regression: a rule group with ONLY a RATE policy resolves fine, but hourBuckets is only ever
+    // populated by the OVERTIME processor (see engine/defaultHours.ts) — without this fallback, a
+    // client that hasn't configured OT rules would silently get a real rate but zero hours/pay for
+    // real worked time.
+    await seedBasics();
+    setMockResolveLayeredHandler(() => mockLayer({ policies: [RATE_POLICY] }));
+
+    await Punch.create({
+      clientId,
+      employeeId: "emp-1",
+      siteId: "site-1",
+      task: "Stocking",
+      clockIn: new Date("2026-01-05T09:00:00.000Z"), // Monday
+      clockOut: new Date("2026-01-05T17:00:00.000Z"), // 8 hours
+      timezone: "UTC",
+      status: "closed",
+    });
+
+    const result = await processEmployeePeriod(String(clientId), "emp-1", "2026-01-05");
+    expect(result.status).toBe("completed");
+
+    const timesheet = await Timesheet.findById(result.timesheetId).lean();
+    const line = timesheet!.lines[0];
+    expect(line.totalHours).toBe(8);
+    expect(line.additionalHours).toBe(0);
+    expect(line.dailyAmount).toBe(160); // 8h * $20
+    expect(line.totalAmount).toBe(160);
+  });
+
   it("excludes a day with an open punch instead of guessing", async () => {
     await seedBasics();
     setMockResolveLayeredHandler(() => mockLayer({ policies: [RATE_POLICY, OVERTIME_POLICY] }));

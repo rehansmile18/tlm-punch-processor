@@ -19,6 +19,7 @@ import { buildSegmentsFromPunches, hasOpenPunch } from "../../engine/segments";
 import { resolveAndOrderLayers } from "../../engine/resolveLayers";
 import { runPipeline, PipelineStep } from "../../engine/pipeline";
 import { finalizeAmounts } from "../../engine/finalizeAmounts";
+import { applyDefaultHoursIfUnset } from "../../engine/defaultHours";
 import { processorRegistry } from "../../engine/registry";
 import { createInitialState, WeekToDateContext } from "../../engine/types";
 import { acquireLock, heartbeat, releaseLock } from "./lock.service";
@@ -238,12 +239,17 @@ export async function processEmployeePeriod(
 
         try {
           const initialState = createInitialState(businessDate, employee.timezone, segments);
-          const { finalState, steps } = runPipeline(
+          const { finalState: pipelineFinalState, steps } = runPipeline(
             orderedSteps,
             initialState,
             { clientId: clientIdStr, employeeId, siteId: primarySiteId, task: primaryTask, evaluationTz: employee.timezone, weekToDate },
             processorRegistry
           );
+          // Falls back to counting worked minutes as straight regular time if nothing in the
+          // resolved chain (i.e. no OVERTIME policy) ever set hourBuckets — see defaultHours.ts.
+          // Applied to the state that gets PERSISTED too, so a later reprocessing call that reuses
+          // this run (see the day-loop's REUSE branch above) sees the same computed hours.
+          const finalState = applyDefaultHoursIfUnset(pipelineFinalState);
 
           await recordAuditSteps(run._id, steps);
           await completeProcessingRun(run.runId, {
